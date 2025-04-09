@@ -1,55 +1,96 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-File: vietnamese_input_hook.py
-Chứa phần hook toàn cục bàn phím sử dụng thư viện keyboard và tích hợp logic bộ gõ từ file vietnamese_input_logic.
+File: global_vietnamese_hook.py
+
+Mục đích:
+  - Hook toàn cục bàn phím trên Windows dùng Python để chuyển ký tự nhập theo kiểu Telex thành tiếng Việt Unicode,
+    dựa trên logic chuyển đổi có trong Logic_Kiemthu.py.
+  - Chỉ chặn (suppress) những phím chữ dùng để soạn Telex, trong khi các phím chức năng như space, enter, backspace, tab, …  
+    vẫn được chuyển tới ứng dụng.
+  
+Lưu ý: Chạy file này với quyền Administrator.
 """
 
 import keyboard
-import Logic_KiemThu
+from Logic_Kiemthu import process_key
 
-# Global buffer chứa phần soạn thảo hiện thời.
 buffer = ""
+current_output = ""
+# Flag để đánh dấu khi đang gửi sự kiện từ script (để bỏ qua xử lý của hook)
+is_synthesizing = False
 
 def flush_buffer():
-    """
-    Khi hoàn thành một syllable (ví dụ: nhấn Space hoặc Enter), gửi nội dung buffer ra
-    ứng dụng hiện thời và reset buffer.
-    """
-    global buffer
-    if buffer:
-        keyboard.write(buffer)
-        buffer = ""
+    global buffer, current_output
+    buffer = ""
+    current_output = ""
+
+def update_output(new_text):
+    global current_output, is_synthesizing
+    if new_text == current_output:
+        return
+    # Xóa text hiện tại (chỉ xoá nếu có)
+    if current_output:
+        is_synthesizing = True
+        # Gửi đủ backspace để xoá toàn bộ text hiện tại
+        for _ in range(len(current_output)):
+            keyboard.send('backspace')
+        is_synthesizing = False
+    # Viết text mới
+    is_synthesizing = True
+    keyboard.write(new_text)
+    is_synthesizing = False
+    current_output = new_text
 
 def on_key_event(event):
-    """
-    Callback cho hook toàn cục.
-    - Với các phím 'space' hoặc 'enter', commit buffer và reset.
-    - Với phím Backspace, xóa ký tự cuối trong buffer.
-    - Còn lại, nếu là ký tự đơn (length == 1), xử lý qua process_key của logic bộ gõ.
-    """
-    global buffer
-    if event.event_type != "down":
+    global buffer, is_synthesizing
+
+    # Bỏ qua các sự kiện do script tự gửi ra
+    if is_synthesizing:
+        return True
+
+    # Chỉ xử lý key down
+    if event.event_type != 'down':
         return
 
-    if event.name in ['space', 'enter']:
-        flush_buffer()
-        # Gửi phím commit (Space hay Enter) sang ứng dụng hiện thời.
-        keyboard.write(" " if event.name == "space" else "\n")
-    else:
-        # Xử lý các phím có độ dài 1 (đại diện cho ký tự)
-        if len(event.name) == 1:
-            buffer = Logic_KiemThu.process_key(event.name, buffer)
-            print("Đang soạn:", buffer)
-        else:
-            # Xử lý Backspace: xóa ký tự cuối trong buffer.
-            if event.name == "backspace":
-                buffer = buffer[:-1] if buffer else buffer
-            else:
-                # Với các phím khác, chuyển tiếp sang ứng dụng hiện thời.
-                keyboard.write(event.name)
+    key = event.name
 
-if __name__ == "__main__":
-    # Đăng ký hook toàn cục với suppress=True để chặn phím gốc không được gửi sang ứng dụng khác.
-    keyboard.hook(on_key_event, suppress=True)
-    print("Bộ gõ đang chạy. Nhấn ESC để thoát.")
-    keyboard.wait("esc")
+    # Nếu là phím chữ (dựa vào isalpha) và chỉ một ký tự
+    if len(key) == 1 and key.isprintable() and key.isalpha():
+        new_buffer = process_key(key, buffer)
+        if new_buffer != buffer:
+            buffer = new_buffer
+            update_output(buffer)
+        else:
+            flush_buffer()
+            is_synthesizing = True
+            keyboard.write(key)
+            is_synthesizing = False
+        # Trả về False để chặn event gốc đi tới ứng dụng
+        return False
+
+    # Xử lý các phím chức năng
+    if key == 'backspace':
+        if buffer:
+            buffer = buffer[:-1]
+            update_output(buffer)
+            return False  # Chặn event gốc
+        else:
+            return True
+    elif key in ['space', 'enter', 'tab']:
+        if buffer:
+            flush_buffer()
+            is_synthesizing = True
+            keyboard.send(key)
+            is_synthesizing = False
+            return False
+        else:
+            return True
+    else:
+        if buffer:
+            flush_buffer()
+        return True
+
+keyboard.hook(on_key_event, suppress=False)
+print("Global Vietnamese Input Method đang chạy... (nhấn ESC để thoát)")
+keyboard.wait('esc')
